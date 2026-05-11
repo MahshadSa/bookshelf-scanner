@@ -25,6 +25,20 @@ Upload photos of your shelves. The app does three things:
 
 The final catalog lives in your browser's IndexedDB and can be exported to CSV or JSON whenever you want.
 
+## Screenshots
+
+**Library view.** Searchable, sortable catalog with per-country breakdown and CSV/JSON export.
+
+![Library](docs/screenshots/01-library.png)
+
+**Review step.** Extracted books are shown in an editable table sorted by confidence so the rows most likely to need a human eye come first.
+
+![Review](docs/screenshots/02-review.png)
+
+**Upload.** Drag and drop shelf photos, then trigger extraction.
+
+![Upload](docs/screenshots/03-upload.png)
+
 ## Getting started
 
 You need Node.js 18 or higher and a free [HuggingFace token](https://huggingface.co/settings/tokens) (a read token is enough).
@@ -79,21 +93,7 @@ bookshelf-scanner/
         ├── text.js                     # Persian/Arabic normalization, dedup keys
         └── library.js                  # IndexedDB persistence, CSV/JSON export
 ```
-## Screenshots
 
-**Library view.** Searchable, sortable catalog with per-country breakdown
-and CSV/JSON export.
-
-![Library](docs/screenshots/01-library.png)
-
-**Review step.** Extracted books are shown in an editable table sorted
-by confidence so the rows most likely to need a human eye come first.
-
-![Review](docs/screenshots/02-review.png)
-
-**Upload.** Drag and drop shelf photos, then trigger extraction.
-
-![Upload](docs/screenshots/03-upload.png)
 
 ## Tech stack
 
@@ -127,6 +127,13 @@ The pipeline is designed for mixed-language libraries. A few specific decisions 
 
 **Genre as a controlled vocabulary.** Open Library `subject` arrays contain things like "Accessible book" and "Internet Archive Wayback Machine" alongside actual genres. A keyword map normalizes these to a small fixed set (Fiction, Non-fiction, History, etc.) so the dashboard doesn't get cluttered.
 
+## Known limitations
+
+- HEIC images from iPhone exports aren't supported yet; export as JPG before uploading.
+- The HuggingFace token lives in browser storage, which is fine for a local tool but not safe to deploy publicly without proxying through a server.
+- Vision-model accuracy on decorative Persian calligraphic spines drops to around 80 to 85 percent; the review step exists specifically because of this.
+- Open Library has thin coverage for many Persian publishers, which is why the LLM fallback exists.
+
 ## Roadmap
 
 - [ ] Cover image thumbnails in the library list
@@ -134,6 +141,11 @@ The pipeline is designed for mixed-language libraries. A few specific decisions 
 - [ ] HEIC support via client-side conversion (iPhone exports)
 - [ ] Decade and language breakdowns alongside the country chart
 - [ ] Back up / restore the library via JSON import
+
+
+## Project history
+
+The initial version split this into a Python/FastAPI backend and a React frontend. For a single-user local tool, that meant two processes to run, Python as an installation dependency, and the same logic duplicated in both languages. The current version removes the backend entirely, moves persistence to IndexedDB, and consolidates the pipeline into the frontend. The code is now about the same length but does roughly twice as much, with one process to maintain.
 
 ## License
 
