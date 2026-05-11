@@ -147,6 +147,8 @@ The pipeline is designed for mixed-language libraries. A few specific decisions 
 
 The initial version split this into a Python/FastAPI backend and a React frontend. For a single-user local tool, that meant two processes to run, Python as an installation dependency, and the same logic duplicated in both languages. The current version removes the backend entirely, moves persistence to IndexedDB, and consolidates the pipeline into the frontend. The code is now about the same length but does roughly twice as much, with one process to maintain.
 
+The JavaScript and Node.js implementation was developed with Claude Opus 4.7 (Anthropic) as a coding assistant for syntax, boilerplate, and debugging. The overall system design, pipeline architecture, and decisions around model selection, multilingual handling, and two-tier enrichment were made independently.
+
 ## License
 
 MIT
