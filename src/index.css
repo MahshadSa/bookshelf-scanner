@@ -1,0 +1,37 @@
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: #f9f7f2;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Persian/Arabic text should fall back to a script-aware font.
+   The serif/sans stacks above don't include Arabic glyphs. */
+:lang(fa), :lang(ar) {
+  font-family: "Vazirmatn", "IRANSans", "Tahoma", sans-serif;
+}
+
+input:focus,
+select:focus {
+  outline: none;
+  border-color: #b8a88a !important;
+}
+
+button:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+::selection {
+  background: #4a7c5940;
+}
