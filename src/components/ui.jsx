@@ -103,7 +103,7 @@ const STEPS = [
 
 export function Stepper({ current }) {
   return (
-    <div style={{
+    <div className="stepper" aria-label="Scan progress" style={{
       display: "flex",
       justifyContent: "center",
       margin: "0 auto 40px",
@@ -113,9 +113,9 @@ export function Stepper({ current }) {
         const active = s.num === current;
         const done = s.num < current;
         return (
-          <div key={s.num} style={{ display: "flex", alignItems: "center", flex: i < STEPS.length - 1 ? 1 : "none" }}>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: "80px" }}>
-              <div style={{
+          <div className="stepper-item" key={s.num} style={{ display: "flex", alignItems: "center", flex: i < STEPS.length - 1 ? 1 : "none" }}>
+            <div className="stepper-node" style={{ display: "flex", flexDirection: "column", alignItems: "center", minWidth: "80px" }}>
+              <div className="stepper-connector" style={{
                 width: "32px",
                 height: "32px",
                 borderRadius: "50%",
@@ -128,7 +128,7 @@ export function Stepper({ current }) {
                 color: active || done ? "#f4f0e8" : "#999",
                 border: active || done ? "none" : "1.5px solid #ccc",
                 transition: "all 0.3s ease",
-              }}>
+              }} aria-current={active ? "step" : undefined}>
                 {done ? "✓" : s.num}
               </div>
               <span style={{
@@ -158,10 +158,13 @@ export function Stepper({ current }) {
 
 // ---------- ProgressBar ----------
 
-export function ProgressBar({ current, total, label }) {
+export function ProgressBar({ current, total, label, onCancel }) {
   const pct = total > 0 ? Math.round((current / total) * 100) : 0;
   return (
-    <div style={{
+    <div
+      role="status"
+      aria-live="polite"
+      style={{
       maxWidth: "600px",
       margin: "0 auto 20px",
       padding: "20px",
@@ -169,7 +172,13 @@ export function ProgressBar({ current, total, label }) {
       border: `1px solid ${COLORS.border}`,
       borderRadius: "10px",
     }}>
-      <div style={{
+      <div
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={total}
+        aria-valuenow={current}
+        aria-label={label}
+        style={{
         display: "flex",
         justifyContent: "space-between",
         alignItems: "baseline",
@@ -197,6 +206,11 @@ export function ProgressBar({ current, total, label }) {
           transition: "width 0.3s ease",
         }} />
       </div>
+      {onCancel && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "12px" }}>
+          <Button variant="ghost" onClick={onCancel} style={{ padding: "6px 12px" }}>Cancel</Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -206,7 +220,7 @@ export function ProgressBar({ current, total, label }) {
 export function ErrorBanner({ message, onDismiss }) {
   if (!message) return null;
   return (
-    <div style={{
+    <div role="alert" style={{
       maxWidth: "600px",
       margin: "0 auto 20px",
       padding: "12px 16px",

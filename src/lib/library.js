@@ -13,7 +13,9 @@
 // next step would be one record per book under separate keys.
 
 import { get, set, del } from "idb-keyval";
-import { dedupKey } from "./text.js";
+import { areLikelySameBook } from "./text.js";
+import { sanitizeStoredBook } from "./validation.js";
+import { migrateSettings } from "./providers.js";
 
 const LIBRARY_KEY = "library:v1";
 const SETTINGS_KEY = "settings:v1";
@@ -22,7 +24,9 @@ const SETTINGS_KEY = "settings:v1";
 
 export async function loadLibrary() {
   try {
-    return (await get(LIBRARY_KEY)) || [];
+    const stored = await get(LIBRARY_KEY);
+    if (!Array.isArray(stored)) return [];
+    return stored.map(sanitizeStoredBook).filter(Boolean);
   } catch (err) {
     console.error("Failed to load library:", err);
     return [];
@@ -45,16 +49,11 @@ export async function saveLibrary(books) {
  */
 export async function addBooksToLibrary(newBooks) {
   const existing = await loadLibrary();
-  const existingKeys = new Set(
-    existing.map((b) => dedupKey(b.titleRoman || b.title) + "|" + dedupKey(b.authorRoman || b.author))
-  );
-
-  const toAdd = newBooks.filter((b) => {
-    const key = dedupKey(b.titleRoman || b.title) + "|" + dedupKey(b.authorRoman || b.author);
-    if (existingKeys.has(key)) return false;
-    existingKeys.add(key);
-    return true;
-  });
+  const toAdd = [];
+  for (const candidate of newBooks.map(sanitizeStoredBook).filter(Boolean)) {
+    if ([...existing, ...toAdd].some((book) => areLikelySameBook(book, candidate))) continue;
+    toAdd.push(candidate);
+  }
 
   const updated = [...existing, ...toAdd];
   await saveLibrary(updated);
@@ -83,9 +82,9 @@ export async function clearLibrary() {
 
 export async function loadSettings() {
   try {
-    return (await get(SETTINGS_KEY)) || {};
+    return migrateSettings(await get(SETTINGS_KEY));
   } catch {
-    return {};
+    return migrateSettings({});
   }
 }
 
@@ -97,22 +96,25 @@ export async function saveSettings(settings) {
 
 export function exportAsCSV(books) {
   const headers = [
-    "Title", "Title (Romanized)", "Author", "Author (Romanized)",
+    "Title", "Title (Romanized)", "Title (English)",
+    "Author", "Author (Romanized)", "Author (English)",
     "Year", "Country", "Genre", "Pages", "Language", "ISBN", "Confidence",
   ];
 
   const rows = books.map((b) => [
     csvEscape(b.title),
     csvEscape(b.titleRoman),
+    csvEscape(b.titleEnglish),
     csvEscape(b.author),
     csvEscape(b.authorRoman),
+    csvEscape(b.authorEnglish),
     b.year || "",
     csvEscape(b.country),
     csvEscape(b.genre),
     b.pages || "",
     csvEscape(b.language),
     csvEscape(b.isbn),
-    b.confidence != null ? b.confidence.toFixed(2) : "",
+    Number.isFinite(Number(b.confidence)) ? Number(b.confidence).toFixed(2) : "",
   ]);
 
   return [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
@@ -124,13 +126,16 @@ export function exportAsJSON(books) {
 
 export function downloadFile(content, filename, mimeType = "text/csv") {
   // BOM helps Excel display Persian text correctly
-  const blob = new Blob(["\uFEFF" + content], { type: `${mimeType};charset=utf-8` });
+  const prefix = mimeType === "text/csv" ? "\uFEFF" : "";
+  const blob = new Blob([prefix + content], { type: `${mimeType};charset=utf-8` });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function csvEscape(str) {

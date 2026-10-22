@@ -6,7 +6,11 @@
 import { useState, useMemo } from "react";
 import { Button, ConfidenceBadge, COLORS, FONTS } from "./ui.jsx";
 
-export function ReviewScreen({ books, setBooks, onNext, onBack }) {
+const METADATA_FIELDS = new Set(["titleEnglish", "authorEnglish", "year", "country", "genre", "pages", "language", "isbn"]);
+const IDENTITY_FIELDS = new Set(["title", "titleRoman", "author", "authorRoman"]);
+const GENRE_OPTIONS = ["Fiction", "Non-fiction", "History", "Philosophy", "Science", "Poetry", "Biography", "Self-help", "Religion", "Politics", "Psychology", "Art", "Drama"];
+
+export function ReviewScreen({ books, setBooks, stage = "identity", onNext, onBack }) {
   const [editingId, setEditingId] = useState(null);
   const [sortBy, setSortBy] = useState("confidence");
 
@@ -21,7 +25,18 @@ export function ReviewScreen({ books, setBooks, onNext, onBack }) {
   }, [books, sortBy]);
 
   const updateBook = (id, field, value) => {
-    setBooks((prev) => prev.map((b) => (b.id === id ? { ...b, [field]: value } : b)));
+    setBooks((prev) => prev.map((b) => {
+      if (b.id !== id) return b;
+      const updated = { ...b, [field]: value };
+      if (METADATA_FIELDS.has(field)) {
+        updated.metadataSource = { ...(b.metadataSource || {}), [field]: "user" };
+      } else if (IDENTITY_FIELDS.has(field) && Object.keys(b.metadataSource || {}).length > 0) {
+        for (const metadataField of METADATA_FIELDS) updated[metadataField] = null;
+        updated.coverUrl = null;
+        updated.metadataSource = {};
+      }
+      return updated;
+    }));
   };
 
   const deleteBook = (id) => {
@@ -51,7 +66,7 @@ export function ReviewScreen({ books, setBooks, onNext, onBack }) {
         color: COLORS.text,
         marginBottom: "8px",
         textAlign: "center",
-      }}>Review extracted books</h2>
+      }}>{stage === "metadata" ? "Review book metadata" : "Review extracted books"}</h2>
       <p style={{
         fontFamily: FONTS.sans,
         fontSize: "14px",
@@ -59,7 +74,9 @@ export function ReviewScreen({ books, setBooks, onNext, onBack }) {
         textAlign: "center",
         marginBottom: "20px",
       }}>
-        {books.length} {books.length === 1 ? "book" : "books"} found. Click any row to edit. Low-confidence rows are listed first.
+        {stage === "metadata"
+          ? "Check the suggested details before saving. Click any row to edit; source labels show where each value came from."
+          : `${books.length} ${books.length === 1 ? "book" : "books"} found. Click any row to edit. Low-confidence rows are listed first.`}
       </p>
 
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "12px", gap: "8px", alignItems: "center" }}>
@@ -92,7 +109,7 @@ export function ReviewScreen({ books, setBooks, onNext, onBack }) {
         overflow: "hidden",
         boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
       }}>
-        <div style={{
+        <div className="review-table-header" style={{
           display: "grid",
           gridTemplateColumns: "1fr 1fr 70px 40px",
           padding: "12px 20px",
@@ -119,22 +136,33 @@ export function ReviewScreen({ books, setBooks, onNext, onBack }) {
             onToggle={() => setEditingId(editingId === book.id ? null : book.id)}
             onUpdate={updateBook}
             onDelete={deleteBook}
+            stage={stage}
           />
         ))}
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", marginTop: "24px" }}>
-        <Button variant="ghost" onClick={onBack}>← Back</Button>
-        <Button onClick={onNext}>Confirm & enrich →</Button>
+      <div className="review-footer" style={{ display: "flex", justifyContent: "space-between", marginTop: "24px" }}>
+        <Button variant="ghost" onClick={onBack}>{stage === "metadata" ? "← Back to titles" : "← Back"}</Button>
+        <Button onClick={onNext}>{stage === "metadata" ? "Save to library →" : "Confirm & enrich →"}</Button>
       </div>
     </div>
   );
 }
 
-function BookRow({ book, isEditing, onToggle, onUpdate, onDelete }) {
+function BookRow({ book, isEditing, onToggle, onUpdate, onDelete, stage }) {
   return (
     <div
       onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
+      role="button"
+      tabIndex={0}
+      aria-expanded={isEditing}
       style={{
         borderBottom: `1px solid ${COLORS.borderSoft}`,
         cursor: "pointer",
@@ -142,13 +170,13 @@ function BookRow({ book, isEditing, onToggle, onUpdate, onDelete }) {
         transition: "background 0.15s",
       }}
     >
-      <div style={{
+      <div className="review-row-main" style={{
         display: "grid",
         gridTemplateColumns: "1fr 1fr 70px 40px",
         padding: "14px 20px",
         alignItems: "center",
       }}>
-        <div>
+        <div className="review-title-cell">
           <div style={{ fontFamily: FONTS.serif, fontSize: "14px", color: COLORS.text, lineHeight: 1.3 }}>
             {book.title || <em style={{ color: COLORS.textGhost }}>(no title)</em>}
           </div>
@@ -157,8 +185,14 @@ function BookRow({ book, isEditing, onToggle, onUpdate, onDelete }) {
               {book.titleRoman}
             </div>
           )}
+          {book.titleEnglish && (
+            <div style={{ fontFamily: FONTS.serif, fontStyle: "italic", fontSize: "12px", color: COLORS.textMuted, marginTop: "2px" }}>
+              {book.titleEnglish}
+            </div>
+          )}
+          {stage === "metadata" && <MetadataSummary book={book} />}
         </div>
-        <div style={{ fontFamily: FONTS.sans, fontSize: "13px", color: COLORS.textMuted }}>
+        <div className="review-author-cell" style={{ fontFamily: FONTS.sans, fontSize: "13px", color: COLORS.textMuted }}>
           {book.author || <em style={{ color: COLORS.textGhost }}>(no author)</em>}
           {book.authorRoman && (
             <div style={{ fontSize: "11px", color: COLORS.textGhost, marginTop: "2px" }}>
@@ -166,12 +200,13 @@ function BookRow({ book, isEditing, onToggle, onUpdate, onDelete }) {
             </div>
           )}
         </div>
-        <div style={{ textAlign: "center" }}>
+        <div className="review-confidence-cell" style={{ textAlign: "center" }}>
           <ConfidenceBadge value={book.confidence} />
         </div>
         <button
           onClick={(e) => { e.stopPropagation(); onDelete(book.id); }}
           aria-label="Delete row"
+          className="review-delete-cell"
           style={{
             background: "none",
             border: "none",
@@ -188,6 +223,7 @@ function BookRow({ book, isEditing, onToggle, onUpdate, onDelete }) {
 
       {isEditing && (
         <div
+          className="review-editor-grid"
           style={{
             padding: "0 20px 16px",
             display: "grid",
@@ -196,37 +232,54 @@ function BookRow({ book, isEditing, onToggle, onUpdate, onDelete }) {
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          {[
+          {(stage === "metadata" ? [
+            { label: "English title", field: "titleEnglish" },
+            { label: "English author", field: "authorEnglish" },
+            { label: "Year", field: "year", type: "number" },
+            { label: "Country", field: "country" },
+            { label: "Genre", field: "genre" },
+            { label: "Pages", field: "pages", type: "number" },
+            { label: "Language", field: "language" },
+            { label: "ISBN", field: "isbn" },
+          ] : [
             { label: "Title", field: "title" },
             { label: "Author", field: "author" },
             { label: "Romanized title", field: "titleRoman" },
             { label: "Romanized author", field: "authorRoman" },
-          ].map(({ label, field }) => (
+          ]).map(({ label, field, type }) => (
             <div key={field}>
-              <label style={{
+              <label htmlFor={`${field}-${book.id}`} style={{
                 fontFamily: FONTS.sans,
                 fontSize: "10px",
                 color: COLORS.textGhost,
                 textTransform: "uppercase",
                 letterSpacing: "0.06em",
               }}>{label}</label>
-              <input
-                value={book[field] || ""}
-                onChange={(e) => onUpdate(book.id, field, e.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "7px 10px",
-                  border: `1px solid #e0dbd0`,
-                  borderRadius: "5px",
-                  fontFamily: FONTS.sans,
-                  fontSize: "13px",
-                  color: COLORS.text,
-                  background: COLORS.card,
-                  outline: "none",
-                  marginTop: "3px",
-                  boxSizing: "border-box",
-                }}
-              />
+              {field === "genre" ? (
+                <select
+                  id={`${field}-${book.id}`}
+                  value={book[field] || ""}
+                  onChange={(e) => onUpdate(book.id, field, e.target.value)}
+                  style={editorControlStyle}
+                >
+                  <option value="">Unknown</option>
+                  {GENRE_OPTIONS.map((genre) => <option key={genre} value={genre}>{genre}</option>)}
+                </select>
+              ) : (
+                <input
+                  id={`${field}-${book.id}`}
+                  type={type || "text"}
+                  min={type === "number" ? 0 : undefined}
+                  value={book[field] || ""}
+                  onChange={(e) => onUpdate(book.id, field, e.target.value)}
+                  style={editorControlStyle}
+                />
+              )}
+              {stage === "metadata" && book.metadataSource?.[field] && (
+                <span style={{ fontFamily: FONTS.sans, fontSize: "9px", color: COLORS.textGhost }}>
+                  Source: {sourceLabel(book.metadataSource[field])}
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -234,3 +287,32 @@ function BookRow({ book, isEditing, onToggle, onUpdate, onDelete }) {
     </div>
   );
 }
+
+function MetadataSummary({ book }) {
+  const values = [book.year, book.country, book.genre, book.pages && `${book.pages} pages`, book.language].filter(Boolean);
+  return (
+    <div className="metadata-summary" style={{ fontFamily: FONTS.sans, fontSize: "10px", color: COLORS.textFaint, marginTop: "5px" }}>
+      {values.length > 0 ? values.join(" · ") : "No metadata found — click to add details"}
+    </div>
+  );
+}
+
+const SOURCE_LABELS = { wikidata: "Wikidata", openlibrary: "Open Library", model: "AI suggestion" };
+
+function sourceLabel(source) {
+  return SOURCE_LABELS[source] || "Edited by you";
+}
+
+const editorControlStyle = {
+  width: "100%",
+  padding: "7px 10px",
+  border: "1px solid #e0dbd0",
+  borderRadius: "5px",
+  fontFamily: FONTS.sans,
+  fontSize: "13px",
+  color: COLORS.text,
+  background: COLORS.card,
+  outline: "none",
+  marginTop: "3px",
+  boxSizing: "border-box",
+};

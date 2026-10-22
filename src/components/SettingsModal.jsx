@@ -1,35 +1,71 @@
 // src/components/SettingsModal.jsx
-// Settings panel for the HuggingFace API token and model choices.
+// Settings panel for the model provider, its API key and model choices.
+// Each provider keeps its own key and models, so switching back and forth
+// does not lose anything.
 // Stored in IndexedDB (via idb-keyval); never leaves the browser.
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button, COLORS, FONTS } from "./ui.jsx";
 import { loadSettings, saveSettings } from "../lib/library.js";
-
-export const DEFAULT_VISION_MODEL = "Qwen/Qwen2.5-VL-72B-Instruct";
-export const DEFAULT_TEXT_MODEL = "Qwen/Qwen2.5-72B-Instruct";
+import { PROVIDERS, migrateSettings } from "../lib/providers.js";
 
 export function SettingsModal({ open, onClose, onSaved }) {
-  const [apiKey, setApiKey] = useState("");
-  const [visionModel, setVisionModel] = useState(DEFAULT_VISION_MODEL);
-  const [textModel, setTextModel] = useState(DEFAULT_TEXT_MODEL);
+  const [settings, setSettings] = useState(() => migrateSettings({}));
   const [showKey, setShowKey] = useState(false);
+  const dialogRef = useRef(null);
+  const apiKeyRef = useRef(null);
+  const previousFocus = useRef(null);
 
   useEffect(() => {
     if (!open) return;
+    previousFocus.current = document.activeElement;
     loadSettings().then((s) => {
-      setApiKey(s.apiKey || "");
-      setVisionModel(s.visionModel || DEFAULT_VISION_MODEL);
-      setTextModel(s.textModel || DEFAULT_TEXT_MODEL);
+      setSettings(s);
+      requestAnimationFrame(() => apiKeyRef.current?.focus());
     });
+    return () => previousFocus.current?.focus?.();
   }, [open]);
 
   if (!open) return null;
 
+  const provider = settings.provider;
+  const config = PROVIDERS[provider];
+  const { apiKey, visionModel, textModel } = settings.providers[provider];
+
+  const setProvider = (id) => setSettings((prev) => ({ ...prev, provider: id }));
+  const update = (field, value) => setSettings((prev) => ({
+    ...prev,
+    providers: { ...prev.providers, [prev.provider]: { ...prev.providers[prev.provider], [field]: value } },
+  }));
+
   const handleSave = async () => {
-    await saveSettings({ apiKey: apiKey.trim(), visionModel, textModel });
+    const providers = Object.fromEntries(Object.entries(settings.providers).map(([id, entry]) => [
+      id,
+      { apiKey: entry.apiKey.trim(), visionModel: entry.visionModel.trim(), textModel: entry.textModel.trim() },
+    ]));
+    await saveSettings({ provider, providers });
     onSaved?.();
     onClose();
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onClose();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const focusable = [...dialogRef.current.querySelectorAll("button, input, select, [tabindex]:not([tabindex='-1'])")]
+      .filter((element) => !element.disabled);
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last?.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first?.focus();
+    }
   };
 
   return (
@@ -47,6 +83,12 @@ export function SettingsModal({ open, onClose, onSaved }) {
       }}
     >
       <div
+        className="settings-dialog"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settings-title"
+        onKeyDown={handleKeyDown}
         onClick={(e) => e.stopPropagation()}
         style={{
           background: COLORS.bg,
@@ -58,7 +100,7 @@ export function SettingsModal({ open, onClose, onSaved }) {
           boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
         }}
       >
-        <h2 style={{
+        <h2 id="settings-title" style={{
           fontFamily: FONTS.serif,
           fontSize: "22px",
           fontWeight: 400,
@@ -71,20 +113,34 @@ export function SettingsModal({ open, onClose, onSaved }) {
           margin: "0 0 24px",
           lineHeight: 1.5,
         }}>
-          Your token and preferences stay on this device. Nothing is sent to anyone except HuggingFace and Open Library when you scan books.
+          Your keys and preferences stay on this device. Nothing is sent to anyone except the model provider below, Open Library and Wikidata when you scan books.
         </p>
 
-        <Field label="HuggingFace token">
-          <div style={{ display: "flex", gap: "8px" }}>
+        <Field label="Model provider" htmlFor="settings-provider">
+          <select
+            id="settings-provider"
+            value={provider}
+            onChange={(e) => setProvider(e.target.value)}
+            style={inputStyle}
+          >
+            {Object.entries(PROVIDERS).map(([id, { label }]) => <option key={id} value={id}>{label}</option>)}
+          </select>
+        </Field>
+
+        <Field label={config.keyLabel} htmlFor="settings-api-key">
+          <div className="settings-token-row" style={{ display: "flex", gap: "8px" }}>
             <input
+              id="settings-api-key"
+              ref={apiKeyRef}
               type={showKey ? "text" : "password"}
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="hf_..."
+              onChange={(e) => update("apiKey", e.target.value)}
+              placeholder={config.keyPlaceholder}
               style={inputStyle}
             />
             <button
               type="button"
+              aria-pressed={showKey}
               onClick={() => setShowKey((v) => !v)}
               style={{
                 padding: "0 12px",
@@ -99,34 +155,36 @@ export function SettingsModal({ open, onClose, onSaved }) {
             >{showKey ? "Hide" : "Show"}</button>
           </div>
           <Hint>
-            Get a free token at{" "}
-            <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener noreferrer" style={{ color: COLORS.accent }}>
-              huggingface.co/settings/tokens
-            </a>. A read token is enough.
+            Get one at{" "}
+            <a href={config.keyUrl} target="_blank" rel="noopener noreferrer" style={{ color: COLORS.accent }}>
+              {config.keyUrl.replace("https://", "")}
+            </a>. {config.keyHint}
           </Hint>
         </Field>
 
-        <Field label="Vision model">
+        <Field label="Vision model" htmlFor="settings-vision-model">
           <input
+            id="settings-vision-model"
             type="text"
             value={visionModel}
-            onChange={(e) => setVisionModel(e.target.value)}
+            onChange={(e) => update("visionModel", e.target.value)}
             style={inputStyle}
           />
           <Hint>Used to read book spines from photos.</Hint>
         </Field>
 
-        <Field label="Text model">
+        <Field label="Text model" htmlFor="settings-text-model">
           <input
+            id="settings-text-model"
             type="text"
             value={textModel}
-            onChange={(e) => setTextModel(e.target.value)}
+            onChange={(e) => update("textModel", e.target.value)}
             style={inputStyle}
           />
-          <Hint>Used to fill metadata gaps when Open Library has no match.</Hint>
+          <Hint>Used to find English titles that Wikidata doesn't have, and to fill metadata gaps.</Hint>
         </Field>
 
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "28px" }}>
+        <div className="settings-actions" style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "28px" }}>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button onClick={handleSave}>Save</Button>
         </div>
@@ -135,10 +193,10 @@ export function SettingsModal({ open, onClose, onSaved }) {
   );
 }
 
-function Field({ label, children }) {
+function Field({ label, htmlFor, children }) {
   return (
     <div style={{ marginBottom: "18px" }}>
-      <label style={{
+      <label htmlFor={htmlFor} style={{
         display: "block",
         fontSize: "11px",
         color: COLORS.textFaint,

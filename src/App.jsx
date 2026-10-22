@@ -4,13 +4,14 @@
 // (images / extracted books), and the persistent library loaded from
 // IndexedDB. Three views: Upload -> Review -> Library.
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 import { Stepper, ProgressBar, ErrorBanner, Button, COLORS, FONTS } from "./components/ui.jsx";
 import { UploadScreen } from "./components/UploadScreen.jsx";
 import { ReviewScreen } from "./components/ReviewScreen.jsx";
 import { LibraryScreen } from "./components/LibraryScreen.jsx";
-import { SettingsModal, DEFAULT_VISION_MODEL, DEFAULT_TEXT_MODEL } from "./components/SettingsModal.jsx";
+import { SettingsModal } from "./components/SettingsModal.jsx";
+import { activeConnection } from "./lib/providers.js";
 
 import { extractBooksFromImages } from "./api/extractor.js";
 import { enrichBooks } from "./api/enricher.js";
@@ -25,16 +26,19 @@ export default function App() {
   // Scan-in-progress state
   const [images, setImages] = useState([]);
   const [extracted, setExtracted] = useState([]);
+  const [reviewStage, setReviewStage] = useState("identity");
 
   // Persistent state
   const [library, setLibrary] = useState([]);
   const [settings, setSettings] = useState({});
 
   // UI state
-  const [phase, setPhase] = useState("idle"); // 'idle' | 'extracting' | 'enriching'
+  const [phase, setPhase] = useState("idle"); // 'idle' | 'extracting' | 'enriching' | 'saving'
   const [progress, setProgress] = useState({ current: 0, total: 0, label: "" });
   const [error, setError] = useState("");
   const [showSettings, setShowSettings] = useState(false);
+  const operationController = useRef(null);
+  const connection = activeConnection(settings);
 
   // ---------- Initial load ----------
 
@@ -44,11 +48,13 @@ export default function App() {
       setLibrary(lib);
       setSettings(s);
       // First-run: open settings if no API key yet
-      if (!s.apiKey) setShowSettings(true);
+      if (!activeConnection(s).apiKey) setShowSettings(true);
       // Land on Library view when the user already has books, otherwise Upload
       setStep(lib.length > 0 ? STEPS.LIBRARY : STEPS.UPLOAD);
     })();
   }, []);
+
+  useEffect(() => () => operationController.current?.abort(), []);
 
   const refreshSettings = useCallback(async () => {
     setSettings(await loadSettings());
@@ -57,8 +63,8 @@ export default function App() {
   // ---------- Actions ----------
 
   const handleExtract = async () => {
-    if (!settings.apiKey) {
-      setError("Add your HuggingFace token in Settings first.");
+    if (!connection.apiKey) {
+      setError("Add your API key in Settings first.");
       setShowSettings(true);
       return;
     }
@@ -67,20 +73,22 @@ export default function App() {
     setError("");
     setPhase("extracting");
     setProgress({ current: 0, total: images.length, label: "Reading shelves..." });
+    const controller = new AbortController();
+    operationController.current = controller;
 
     try {
       const files = images.map((img) => img.file);
       const { books, errors } = await extractBooksFromImages(
         files,
-        settings.apiKey,
-        settings.visionModel || DEFAULT_VISION_MODEL,
+        { provider: connection.provider, apiKey: connection.apiKey, model: connection.visionModel },
         (current, total, filename) => {
           setProgress({
             current,
             total,
             label: filename ? `Reading ${filename}...` : "Done",
           });
-        }
+        },
+        controller.signal
       );
 
       if (errors.length > 0 && books.length === 0) {
@@ -94,51 +102,67 @@ export default function App() {
       }
 
       setExtracted(books);
+      setReviewStage("identity");
       setStep(STEPS.REVIEW);
     } catch (err) {
-      setError(`Extraction failed: ${err.message}`);
+      setError(controller.signal.aborted ? "Extraction cancelled." : `Extraction failed: ${err.message}`);
     } finally {
+      operationController.current = null;
       setPhase("idle");
     }
   };
 
-  const handleEnrichAndSave = async () => {
+  const handleEnrich = async () => {
     if (extracted.length === 0) return;
     setError("");
     setPhase("enriching");
     setProgress({ current: 0, total: extracted.length, label: "Looking up metadata..." });
+    const controller = new AbortController();
+    operationController.current = controller;
 
     try {
       const enriched = await enrichBooks(
         extracted,
-        settings.apiKey,
-        settings.textModel || DEFAULT_TEXT_MODEL,
+        { provider: connection.provider, apiKey: connection.apiKey, model: connection.textModel },
         (current, total, title) => {
           setProgress({
             current,
             total,
             label: title ? `Enriching: ${title}` : "Done",
           });
-        }
+        },
+        controller.signal
       );
+      setExtracted(enriched);
+      setReviewStage("metadata");
+    } catch (err) {
+      setError(controller.signal.aborted ? "Enrichment cancelled." : `Enrichment failed: ${err.message}`);
+    } finally {
+      operationController.current = null;
+      setPhase("idle");
+    }
+  };
 
-      // Merge into the persistent library, skipping cross-batch duplicates
-      const { library: updated, added, skipped } = await addBooksToLibrary(enriched);
+  const handleSave = async () => {
+    setError("");
+    setPhase("saving");
+    setProgress({ current: 0, total: 1, label: "Saving library..." });
+    try {
+      const { library: updated, added, skipped } = await addBooksToLibrary(extracted);
+      setProgress({ current: 1, total: 1, label: "Saved" });
       setLibrary(updated);
-
-      // Reset scan-in-progress state
       setImages((prev) => {
         prev.forEach((img) => URL.revokeObjectURL(img.url));
         return [];
       });
       setExtracted([]);
+      setReviewStage("identity");
       setStep(STEPS.LIBRARY);
-
       if (skipped > 0) {
         setError(`Added ${added} new ${added === 1 ? "book" : "books"}. ${skipped} ${skipped === 1 ? "was" : "were"} already in your library.`);
       }
     } catch (err) {
-      setError(`Enrichment failed: ${err.message}`);
+      setError(`Saving failed: ${err.message}`);
     } finally {
       setPhase("idle");
     }
@@ -146,34 +170,43 @@ export default function App() {
 
   const handleScanMore = () => {
     setExtracted([]);
+    setReviewStage("identity");
     setError("");
     setStep(STEPS.UPLOAD);
   };
 
   const handleBackToUpload = () => {
     setExtracted([]);
+    setReviewStage("identity");
     setStep(STEPS.UPLOAD);
   };
+
+  const handleReviewBack = () => {
+    if (reviewStage === "metadata") setReviewStage("identity");
+    else handleBackToUpload();
+  };
+
+  const handleCancel = () => operationController.current?.abort();
 
   // ---------- Render ----------
 
   return (
-    <div style={{
+    <div className="app-shell" style={{
       minHeight: "100vh",
       background: COLORS.bg,
       fontFamily: FONTS.sans,
       padding: "32px 24px 60px",
     }}>
       {/* Header */}
-      <div style={{
+      <div className="app-header" style={{
         maxWidth: "780px",
         margin: "0 auto 32px",
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
       }}>
-        <div style={{ width: "70px" }} /> {/* spacer for centering */}
-        <div style={{ textAlign: "center" }}>
+        <div className="header-spacer" style={{ width: "70px" }} /> {/* spacer for centering */}
+        <div className="header-title" style={{ textAlign: "center" }}>
           <h1 style={{
             fontFamily: FONTS.serif,
             fontSize: "18px",
@@ -215,6 +248,7 @@ export default function App() {
           current={progress.current}
           total={progress.total}
           label={progress.label}
+          onCancel={phase === "saving" ? undefined : handleCancel}
         />
       )}
 
@@ -223,7 +257,7 @@ export default function App() {
           images={images}
           setImages={setImages}
           onNext={handleExtract}
-          hasApiKey={!!settings.apiKey}
+          hasApiKey={!!connection.apiKey}
         />
       )}
 
@@ -231,8 +265,9 @@ export default function App() {
         <ReviewScreen
           books={extracted}
           setBooks={setExtracted}
-          onNext={handleEnrichAndSave}
-          onBack={handleBackToUpload}
+          stage={reviewStage}
+          onNext={reviewStage === "identity" ? handleEnrich : handleSave}
+          onBack={handleReviewBack}
         />
       )}
 

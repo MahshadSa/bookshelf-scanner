@@ -1,12 +1,34 @@
 // src/components/UploadScreen.jsx
-import { useRef, useCallback } from "react";
+import { useRef, useCallback, useState } from "react";
 import { Button, COLORS, FONTS } from "./ui.jsx";
+
+const ALLOWED_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const MAX_FILES = 10;
+const MAX_FILE_BYTES = 15 * 1024 * 1024;
 
 export function UploadScreen({ images, setImages, onNext, hasApiKey }) {
   const fileRef = useRef(null);
+  const [uploadError, setUploadError] = useState("");
 
-  const addFiles = (files) => {
-    const accepted = Array.from(files).filter((f) => f.type.startsWith("image/"));
+  const addFiles = useCallback((files) => {
+    const incoming = Array.from(files);
+    const valid = incoming.filter((file) => ALLOWED_TYPES.has(file.type) && file.size <= MAX_FILE_BYTES);
+    const existingKeys = new Set(images.map((image) => `${image.name}|${image.file.size}|${image.file.lastModified}`));
+    const accepted = [];
+    const seen = new Set(existingKeys);
+    for (const file of valid) {
+      const key = `${file.name}|${file.size}|${file.lastModified}`;
+      if (seen.has(key) || accepted.length >= MAX_FILES - images.length) continue;
+      seen.add(key);
+      accepted.push(file);
+    }
+
+    if (accepted.length < incoming.length) {
+      setUploadError(`Some files were skipped. Use up to ${MAX_FILES} JPG, PNG, or WebP images, no larger than 15 MB each.`);
+    } else {
+      setUploadError("");
+    }
+
     const newImages = accepted.map((file, i) => ({
       id: Date.now() + i,
       file,
@@ -15,12 +37,12 @@ export function UploadScreen({ images, setImages, onNext, hasApiKey }) {
       url: URL.createObjectURL(file),
     }));
     setImages((prev) => [...prev, ...newImages]);
-  };
+  }, [images, setImages]);
 
   const handleDrop = useCallback((e) => {
     e.preventDefault();
     addFiles(e.dataTransfer.files);
-  }, []);
+  }, [addFiles]);
 
   const removeImage = (id) => {
     setImages((prev) => {
@@ -77,9 +99,18 @@ export function UploadScreen({ images, setImages, onNext, hasApiKey }) {
           accept="image/jpeg,image/png,image/webp"
           multiple
           style={{ display: "none" }}
-          onChange={(e) => addFiles(e.target.files)}
+          onChange={(e) => {
+            addFiles(e.target.files);
+            e.target.value = "";
+          }}
         />
       </div>
+
+      {uploadError && (
+        <p role="alert" style={{ fontFamily: FONTS.sans, fontSize: "12px", color: COLORS.danger, marginTop: "10px" }}>
+          {uploadError}
+        </p>
+      )}
 
       {images.length > 0 && (
         <div style={{ marginTop: "24px" }}>

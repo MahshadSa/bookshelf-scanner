@@ -24,7 +24,7 @@ export function LibraryScreen({ books, setBooks, onScanMore }) {
       .filter((b) => {
         if (languageFilter && b.language !== languageFilter) return false;
         if (!q) return true;
-        return [b.title, b.titleRoman, b.author, b.authorRoman]
+        return [b.title, b.titleRoman, b.titleEnglish, b.author, b.authorRoman, b.authorEnglish]
           .filter(Boolean)
           .some((field) => normalizeText(field).includes(q));
       })
@@ -82,7 +82,7 @@ export function LibraryScreen({ books, setBooks, onScanMore }) {
       }}>Your Library</h2>
 
       {/* Stats grid */}
-      <div style={{
+      <div className="library-stats" style={{
         display: "grid",
         gridTemplateColumns: "repeat(4, 1fr)",
         gap: "12px",
@@ -102,7 +102,7 @@ export function LibraryScreen({ books, setBooks, onScanMore }) {
       )}
 
       {/* Action bar */}
-      <div style={{
+      <div className="library-actions" style={{
         display: "flex",
         gap: "10px",
         marginBottom: "16px",
@@ -270,6 +270,7 @@ function LibraryRow({ book, isLast, onDelete }) {
   const [hover, setHover] = useState(false);
   return (
     <div
+      className="library-row"
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
@@ -283,7 +284,7 @@ function LibraryRow({ book, isLast, onDelete }) {
         gap: "8px",
       }}
     >
-      <div>
+      <div className="library-title-cell">
         <div style={{ fontFamily: FONTS.serif, fontSize: "13px", color: COLORS.text, lineHeight: 1.3 }}>
           {book.title}
         </div>
@@ -292,17 +293,22 @@ function LibraryRow({ book, isLast, onDelete }) {
             {book.titleRoman}
           </div>
         )}
+        {book.titleEnglish && (
+          <div style={{ fontFamily: FONTS.serif, fontStyle: "italic", fontSize: "11px", color: COLORS.textMuted, marginTop: "1px" }}>
+            {book.titleEnglish}
+          </div>
+        )}
       </div>
-      <div style={{ fontFamily: FONTS.sans, fontSize: "12px", color: COLORS.textMuted }}>
+      <div className="library-author-cell" style={{ fontFamily: FONTS.sans, fontSize: "12px", color: COLORS.textMuted }}>
         {book.authorRoman || book.author}
       </div>
-      <div style={{ fontFamily: FONTS.mono, fontSize: "12px", color: "#999", textAlign: "center" }}>
+      <div className="library-year-cell" style={{ fontFamily: FONTS.mono, fontSize: "12px", color: "#999", textAlign: "center" }}>
         {book.year || "—"}
       </div>
-      <div style={{ fontFamily: FONTS.sans, fontSize: "11px", color: "#999", textAlign: "center" }}>
+      <div className="library-country-cell" style={{ fontFamily: FONTS.sans, fontSize: "11px", color: "#999", textAlign: "center" }}>
         {book.country || "—"}
       </div>
-      <div style={{
+      <div className="library-language-cell" style={{
         fontFamily: FONTS.sans,
         fontSize: "10px",
         color: "#bbb",
@@ -311,12 +317,13 @@ function LibraryRow({ book, isLast, onDelete }) {
         letterSpacing: "0.04em",
       }}>{book.language || ""}</div>
       <button
+        className="library-delete-cell"
         onClick={onDelete}
         aria-label="Remove from library"
         style={{
           background: "none",
           border: "none",
-          color: hover ? COLORS.danger : "transparent",
+          color: hover ? COLORS.danger : "#c2b8aa",
           cursor: "pointer",
           fontSize: "16px",
           padding: "4px",
@@ -336,7 +343,7 @@ function computeStats(books) {
   let totalPages = 0;
 
   for (const b of books) {
-    if (b.author) authors.add(b.authorRoman || b.author);
+    if (b.author || b.authorRoman) authors.add(b.authorRoman || b.author);
     if (b.country) {
       countries.add(b.country);
       byCountry[b.country] = (byCountry[b.country] || 0) + 1;

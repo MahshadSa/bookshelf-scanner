@@ -1,13 +1,11 @@
 // src/api/extractor.js
 // Extracts book titles and authors from shelf images using a vision-language
-// model via the HuggingFace Router (OpenAI-compatible endpoint).
-//
-// Default model: Qwen2.5-VL-72B-Instruct, which handles non-Latin scripts
-// noticeably better than smaller open-weight VLMs.
+// model from the configured provider (see lib/providers.js; Gemini Flash on
+// Google's free tier by default).
 
-import { dedupKey } from "../lib/text.js";
-
-const HF_API_URL = "https://router.huggingface.co/v1/chat/completions";
+import { areLikelySameBook } from "../lib/text.js";
+import { sanitizeExtractedBook } from "../lib/validation.js";
+import { chatCompletion, parseJsonReply } from "../lib/llm.js";
 
 const EXTRACTION_PROMPT = `You are analyzing a photograph of a bookshelf. List every book whose spine is visible.
 
@@ -26,7 +24,13 @@ Return ONLY a valid JSON array, no other text. Example:
 
 Be thorough. Include every book you can see, even partially obscured. For partially readable spines, do your best and lower the confidence. If you cannot read any books, return [].`;
 
-async function fileToBase64(file) {
+// Z.ai accepts images under 5 MB and at most 6000 px per side, in JPEG or
+// PNG. 3072 px on the long side keeps spine text legible while staying well
+// inside those limits, and fewer pixels also means fewer tokens per photo.
+const MAX_IMAGE_SIDE = 3072;
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+
+function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
@@ -36,74 +40,54 @@ async function fileToBase64(file) {
 }
 
 /**
- * Extract books from a single shelf image.
+ * Return the photo as a data URL, re-encoded as JPEG when it is too large or
+ * in a format other than JPEG/PNG.
  */
-async function extractFromImage(imageFile, apiKey, model) {
-  const dataUrl = await fileToBase64(imageFile);
-
-  const response = await fetch(HF_API_URL, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{
-        role: "user",
-        content: [
-          { type: "image_url", image_url: { url: dataUrl } },
-          { type: "text", text: EXTRACTION_PROMPT },
-        ],
-      }],
-      max_tokens: 4096,
-      temperature: 0.1,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Extraction API error (${response.status}): ${body.slice(0, 300)}`);
+async function prepareImage(file) {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(bitmap.width, bitmap.height));
+  const acceptedFormat = file.type === "image/jpeg" || file.type === "image/png";
+  if (scale === 1 && acceptedFormat && file.size <= MAX_IMAGE_BYTES) {
+    bitmap.close();
+    return fileToDataUrl(file);
   }
 
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "";
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  return canvas.toDataURL("image/jpeg", 0.9);
+}
+
+/**
+ * Extract books from a single shelf image.
+ */
+async function extractFromImage(imageFile, llm, signal) {
+  const dataUrl = await prepareImage(imageFile);
+
+  const content = await chatCompletion({
+    llm, signal,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image_url", image_url: { url: dataUrl } },
+        { type: "text", text: EXTRACTION_PROMPT },
+      ],
+    }],
+    maxTokens: 4096,
+    timeoutMs: 240000,
+  });
   return parseBooksFromResponse(content);
 }
 
 function parseBooksFromResponse(content) {
-  // Strip markdown fences if present
-  const cleaned = content.replace(/^```(?:json)?\s*/m, "").replace(/\s*```\s*$/m, "").trim();
-
-  // Try parsing as-is first; fall back to regex extraction of an array
-  let parsed;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    const match = cleaned.match(/\[[\s\S]*\]/);
-    if (!match) {
-      console.warn("Could not find JSON array in VLM response:", content.slice(0, 200));
-      return [];
-    }
-    try {
-      parsed = JSON.parse(match[0]);
-    } catch (e) {
-      console.warn("JSON parse error:", e);
-      return [];
-    }
+  const parsed = parseJsonReply(content, "array");
+  if (!Array.isArray(parsed)) {
+    console.warn("Could not find JSON array in VLM response:", content.slice(0, 200));
+    return [];
   }
-
-  if (!Array.isArray(parsed)) return [];
-
-  return parsed
-    .filter((b) => b && (b.title || b.title_roman))
-    .map((b) => ({
-      title: b.title || "",
-      titleRoman: b.title_roman || "",
-      author: b.author || "",
-      authorRoman: b.author_roman || "",
-      confidence: typeof b.confidence === "number" ? b.confidence : 0.5,
-    }));
+  return parsed.map(sanitizeExtractedBook).filter(Boolean);
 }
 
 /**
@@ -111,43 +95,45 @@ function parseBooksFromResponse(content) {
  * Keeps the entry with higher confidence on conflict.
  */
 function deduplicateBatch(books) {
-  const byKey = new Map();
+  const unique = [];
   for (const book of books) {
-    const key = dedupKey(book.titleRoman || book.title) + "|" + dedupKey(book.authorRoman || book.author);
-    const existing = byKey.get(key);
-    if (!existing || book.confidence > existing.confidence) {
-      byKey.set(key, book);
+    const index = unique.findIndex((existing) => areLikelySameBook(existing, book));
+    if (index === -1) {
+      unique.push(book);
+    } else if (book.confidence > unique[index].confidence) {
+      unique[index] = book;
     }
   }
-  return Array.from(byKey.values());
+  return unique;
 }
 
 /**
  * Process a batch of images, returning a deduplicated list of extracted books.
  *
  * @param {File[]} imageFiles
- * @param {string} apiKey  HuggingFace token
- * @param {string} model   VLM model id
+ * @param {{provider: string, apiKey: string, model: string}} llm  vision model connection
  * @param {function} onProgress  (completed, total, currentFilename) => void
  * @returns {Promise<{books: Array, errors: Array}>}
  */
-export async function extractBooksFromImages(imageFiles, apiKey, model, onProgress) {
-  if (!apiKey) throw new Error("API key required. Open Settings to add one.");
+export async function extractBooksFromImages(imageFiles, llm, onProgress, signal) {
+  if (!llm?.apiKey) throw new Error("API key required. Open Settings to add one.");
 
   const allBooks = [];
   const errors = [];
   let idCounter = Date.now();
 
   for (let i = 0; i < imageFiles.length; i++) {
+    signal?.throwIfAborted();
     const file = imageFiles[i];
     onProgress?.(i, imageFiles.length, file.name);
 
     try {
-      const books = await extractFromImage(file, apiKey, model);
+      const books = await extractFromImage(file, llm, signal);
       books.forEach((book) => {
         allBooks.push({ ...book, id: idCounter++, sourceImage: file.name });
       });
     } catch (err) {
+      if (signal?.aborted || err.name === "AbortError") throw err;
       console.error(`Error on ${file.name}:`, err);
       errors.push({ filename: file.name, message: err.message });
     }
